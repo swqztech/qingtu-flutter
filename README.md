@@ -5,7 +5,7 @@
 ## 环境
 
 - Flutter stable（本机 SDK 可放在 `../.flutter`）
-- Windows 桌面
+- **Windows** / **Android** / **iOS**（同一套 `lib/`）
 - Windows 带插件构建需要 **创建符号链接** 权限。任选其一：
   1. **设置** → **隐私和安全性** → **开发人员模式** → 打开  
   2. 或以**管理员** PowerShell 执行一次（本机已用此方式修好）：
@@ -21,6 +21,8 @@
 cd qingtu-flutter
 flutter pub get
 flutter run -d windows
+flutter run -d android   # 需 Android SDK / 设备
+flutter run -d ios       # 需 macOS + Xcode
 ```
 
 ## 打包（绿色 zip + NSIS）

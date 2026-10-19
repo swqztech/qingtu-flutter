@@ -1,13 +1,18 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
+import 'package:share_plus/share_plus.dart';
 
 import '../models/job_options.dart';
+import '../models/job_result.dart';
 import '../models/output_format.dart';
 import '../services/format_results.dart';
 import '../services/image_compress_service.dart';
 import '../services/image_paths.dart';
 import '../services/image_stitch_service.dart';
+import '../services/picked_file_util.dart';
+import '../services/qingtu_paths.dart';
+import '../utils/platform_util.dart';
 
 class QingtuHomePage extends StatefulWidget {
   const QingtuHomePage({super.key});
@@ -39,12 +44,18 @@ class _QingtuHomePageState extends State<QingtuHomePage> {
   }
 
   Future<void> _pickFiles() async {
-    final picked = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'],
-    );
+    final picked = isDesktop
+        ? await FilePicker.pickFiles(
+            type: FileType.custom,
+            allowedExtensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'],
+          )
+        : await FilePicker.pickFiles(type: FileType.image);
     if (picked.isEmpty) return;
-    _addFiles(picked.map((f) => f.path).whereType<String>());
+    final paths = <String>[];
+    for (final f in picked) {
+      paths.add(await materializePickedFile(f));
+    }
+    _addFiles(paths);
   }
 
   Future<void> _pickOutDir() async {
@@ -64,15 +75,24 @@ class _QingtuHomePageState extends State<QingtuHomePage> {
     setState(() {});
   }
 
-  JobOptions _buildOptions() {
+  JobOptions _buildOptions({String? outputDir}) {
     final maxSide = int.tryParse(_maxSideCtrl.text.trim()) ?? 0;
+    String? dir = outputDir;
+    if (dir == null && _customOut && _outDirCtrl.text.trim().isNotEmpty) {
+      dir = _outDirCtrl.text.trim();
+    }
     return JobOptions(
       quality: _quality.round(),
       maxSide: maxSide < 0 ? 0 : maxSide,
       format: _format,
-      outputDir: _customOut && _outDirCtrl.text.trim().isNotEmpty
-          ? _outDirCtrl.text.trim()
-          : null,
+      outputDir: dir,
+    );
+  }
+
+  Future<void> _shareFiles(List<String> paths) async {
+    if (paths.isEmpty || isDesktop) return;
+    await SharePlus.instance.share(
+      ShareParams(files: paths.map(XFile.new).toList(), text: '轻图导出'),
     );
   }
 
@@ -85,25 +105,31 @@ class _QingtuHomePageState extends State<QingtuHomePage> {
 
     setState(() => _busy = true);
     try {
+      final outDir = await QingtuPaths.outputDirectory(
+        firstInputPath: _files.isNotEmpty ? _files.first : null,
+        customDir: _customOut && _outDirCtrl.text.trim().isNotEmpty
+            ? _outDirCtrl.text.trim()
+            : null,
+      );
       if (_compressTab) {
-        final opts = _buildOptions();
+        final opts = _buildOptions(outputDir: outDir);
         final results = await Future(
           () => ImageCompressService.runJobs(_files, opts),
         );
-        setState(() => _log = FormatResults.formatLog(results));
+        final log = FormatResults.formatLog(results);
+        setState(() => _log = log);
+        await _shareFiles(_outputPaths(results));
       } else {
         if (_files.length < 2) {
           setState(() => _log = '拼接需要至少 2 张图');
           return;
         }
         final outPath = await Future(() {
-          final opts = _buildOptions();
-          final path = opts.outputDir != null
-              ? p.join(opts.outputDir!, 'stitched.png')
-              : p.join(ImagePaths.defaultOutputDir(_files.first), 'stitched.png');
+          final path = p.join(outDir, 'stitched.png');
           return ImageStitchService.stitchHorizontal(_files, path);
         });
         setState(() => _log = '拼接完成 → $outPath');
+        await _shareFiles([outPath]);
       }
     } catch (e) {
       setState(() => _log = e.toString());
@@ -111,6 +137,9 @@ class _QingtuHomePageState extends State<QingtuHomePage> {
       setState(() => _busy = false);
     }
   }
+
+  List<String> _outputPaths(List<JobResult> results) =>
+      results.map((r) => r.outputPath).where((p) => p.isNotEmpty).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -198,30 +227,39 @@ class _QingtuHomePageState extends State<QingtuHomePage> {
                 const SizedBox(height: 8),
                 const Text('按列表顺序横向拼接，高度对齐最短边', style: TextStyle(color: _muted)),
               ],
-              const SizedBox(height: 12),
-              CheckboxListTile(
-                value: _customOut,
-                onChanged: (v) => setState(() => _customOut = v ?? false),
-                title: const Text('自定义输出目录'),
-                contentPadding: EdgeInsets.zero,
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _outDirCtrl,
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                        filled: true,
-                        fillColor: Color(0xFFECFDF5),
+              if (isDesktop) ...[
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  value: _customOut,
+                  onChanged: (v) => setState(() => _customOut = v ?? false),
+                  title: const Text('自定义输出目录'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _outDirCtrl,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                          filled: true,
+                          fillColor: Color(0xFFECFDF5),
+                        ),
                       ),
                     ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(onPressed: _pickOutDir, child: const Text('浏览…')),
+                  ],
+                ),
+              ] else
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    '移动端：结果保存在应用文档/qingtu/output，处理后可分享保存',
+                    style: TextStyle(fontSize: 12, color: _muted),
                   ),
-                  const SizedBox(width: 8),
-                  OutlinedButton(onPressed: _pickOutDir, child: const Text('浏览…')),
-                ],
-              ),
+                ),
               const SizedBox(height: 12),
               Row(
                 children: [
